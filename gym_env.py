@@ -19,6 +19,38 @@ import numpy as np
 from gym import spaces
 from treys import Card, Evaluator
 
+class WrappedEval(Evaluator):
+    def __init__(self):
+        super().__init__()
+
+    def evaluate(self, hand: list[int], board: list[int]) -> int:
+        """
+        This is the function that the user calls to get a hand rank.
+
+        No input validation because that's cycles!
+        """
+
+        def ace_to_ten(treys_card: int):
+            """Convert trey's representation of an Ace to trey's representation of a Ten"""
+            as_str = Card.int_to_str(treys_card)
+            alt = as_str.replace("A", "T")  # treys uses "T" for ten
+            alt_as_treys = Card.new(alt)
+            return alt_as_treys
+
+        # check for the edge case of Ace used as high card after a 9
+        alt_hand = list(map(ace_to_ten, hand))
+        alt_board = list(map(ace_to_ten, board))
+
+        reg_score = super().evaluate(hand, board)  # regular score
+        alt_score = super().evaluate(
+            alt_hand, alt_board
+        )  # score if aces were tens
+
+        if alt_score < reg_score:
+            # explicit branch for pytorch coverage
+            return alt_score
+
+        return reg_score
 
 class PokerEnv(gym.Env):
     SMALL_BLIND_PLAYER = 0
@@ -63,7 +95,7 @@ class PokerEnv(gym.Env):
         self.min_raise = self.big_blind_amount
         self.acting_agent = PokerEnv.SMALL_BLIND_PLAYER
         self.last_street_bet = None
-        self.evaluator = Evaluator()
+        self.evaluator = WrappedEval()
 
         # Action space is a Tuple (action_type, raise_amount, card_to_discard)
         # where action is a Discrete(4), raise_amount is a Discrete(100), and card_to_discard is a Discrete(3) (-1 means no card is discarded)
@@ -174,7 +206,19 @@ class PokerEnv(gym.Env):
             reward = (0, 0)
         terminated = winner is not None
         truncated = False
-        info = {"player_0_cards": info0["player_cards"], "player_1_cards": info1["player_cards"], "community_cards": info0["community_cards"], "invalid_action": invalid_action}
+
+        is_showdown = terminated and self.street > 3
+        info = (
+            {
+                "player_0_cards": info0["player_cards"],
+                "player_1_cards": info1["player_cards"],
+                "community_cards": info0["community_cards"],
+                "invalid_action": invalid_action,
+            }
+            if is_showdown
+            else {}
+        )
+
         return (obs0, obs1), reward, terminated, truncated, info
 
     def _draw_card(self):
@@ -222,12 +266,7 @@ class PokerEnv(gym.Env):
 
         obs0, info0 = self._get_single_player_obs(0)
         obs1, info1 = self._get_single_player_obs(1)
-        info = {
-            "player_0_cards": info0["player_cards"],
-            "player_1_cards": info1["player_cards"],
-            "community_cards": info0["community_cards"],
-        }
-
+        info = {}
         return (obs0, obs1), info
 
     def _next_street(self):
@@ -302,9 +341,8 @@ class PokerEnv(gym.Env):
             winner = 1 - self.acting_agent
         elif action_type == self.ActionType.CALL.value:
             self.bets[self.acting_agent] = self.bets[1 - self.acting_agent]
-            if not (self.street == 0 and self.acting_agent == self.small_blind_player):
+            if not (self.street == 0 and self.acting_agent == self.small_blind_player and self.bets[self.acting_agent] == self.big_blind_amount):
                 # on the first street, the little blind can "call" the big blind's bet of 2
-                assert self.bets[self.acting_agent] >= self.big_blind_amount
                 new_street = True
         elif action_type == self.ActionType.CHECK.value:
             if self.acting_agent == self.big_blind_player:
@@ -336,6 +374,7 @@ class PokerEnv(gym.Env):
         if not new_street and action_type != self.ActionType.DISCARD.value:
             self.acting_agent = 1 - self.acting_agent
 
+        self.min_raise = min(self.min_raise, self.MAX_PLAYER_BET - max(self.bets))
         obs, reward, terminated, truncated, info = self._get_obs(winner, action_type == self.ActionType.INVALID.value)
         if terminated:
             self.logger.debug(
