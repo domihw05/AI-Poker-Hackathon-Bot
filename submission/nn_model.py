@@ -1,16 +1,26 @@
+import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.optim as optim
 
-# Define the model architecture
-class PokerPolicyNet(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super(PokerPolicyNet, self).__init__()
-        self.fc1 = nn.Linear(input_dim, 128)
-        self.fc2 = nn.Linear(128, 64)
-        self.output = nn.Linear(64, output_dim)
+class NeuralNetworkModel(nn.Module):
+    def __init__(self, input_dim=10, hidden_dim=64, output_dim=5):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, output_dim)  # Output: EV of fold, call, raise
+        )
 
     def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        logits = self.output(x)
-        return logits  # Raw logits (for masking + softmax later)
+        return self.net(x)
+
+    def predict(self, features):
+        with torch.no_grad():
+            x = torch.tensor(features, dtype=torch.float32)
+            return self.forward(x).numpy()
+
+    def load(self, path):
+        self.load_state_dict(torch.load(path))
+
+    def save(self, path):
+        torch.save(self.state_dict(), path)
