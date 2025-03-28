@@ -17,6 +17,7 @@ from gym_env import PokerEnv
 root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../agents"))
 sys.path.append(root_dir)
 from test_agents import AllInAgent  # or whatever path AllInAgent is under
+from test_agents import ChallengeAgent
 
 # Placeholder classes
 class GameState:
@@ -113,42 +114,52 @@ def train_model(num_episodes=10, n_simulations=10):
     print(f"Training completed in {elapsed:.2f} seconds.")
     model.save("model.pth")
 
-def collect_training_data(num_hands=100):
-    env = PokerEnv()
-    agent0 = PlayerAgent(stream=False)
-    agent1 = AllInAgent(stream=False)
-    
+def collect_training_data(num_hands_per_opponent=250):
+    opponents = {
+        "ChallengeAgent": ChallengeAgent,
+        "AllInAgent": AllInAgent
+    }
+
     data = []
 
-    for _ in range(num_hands):
-        obs, _ = env.reset()
-        terminated = False
-        truncated = False
-        reward = (0, 0)
-        info = {}
+    for label, OpponentClass in opponents.items():
+        print(f"🔄 Collecting hands vs {label}...")
 
-        states = []
-        actions = []
+        for _ in range(num_hands_per_opponent):
+            env = PokerEnv()
+            agent0 = PlayerAgent(stream=False)
+            agent1 = OpponentClass(stream=False)
 
-        while not terminated:
-            curr_agent = agent0 if env.acting_agent == 0 else agent1
-            obs_self = obs[env.acting_agent]
-            rew = reward[env.acting_agent]
+            obs, _ = env.reset()
+            terminated = False
+            truncated = False
+            reward = (0, 0)
+            info = {}
 
-            action = curr_agent.act(obs_self, rew, terminated, truncated, info)
+            states = []
+            actions = []
 
-            # Only store decisions made by PlayerAgent
-            if isinstance(curr_agent, PlayerAgent):
-                features = agent0.extract_features(obs_self, info)
-                states.append(features)
-                actions.append(action[0])  # just the action type
+            while not terminated:
+                curr_agent = agent0 if env.acting_agent == 0 else agent1
+                obs_self = obs[env.acting_agent]
+                rew = reward[env.acting_agent]
 
-            obs, reward, terminated, truncated, info = env.step(action)
+                action = curr_agent.act(obs_self, rew, terminated, truncated, info)
 
-        # After the hand, assign the final reward to every decision taken
-        final_reward = reward[0]  # PlayerAgent is always agent 0
-        for f, a in zip(states, actions):
-            data.append((f, a, final_reward))
+                if isinstance(curr_agent, PlayerAgent):
+                    features = agent0.extract_features(obs_self, info)
+                    states.append(features)
+                    actions.append(action[0])
+
+                obs, reward, terminated, truncated, info = env.step(action)
+
+            discount_factor = 0.9  # can tune this
+
+            # After the hand ends
+            final_reward = reward[0]
+            for step_index, (f, a) in enumerate(zip(states, actions)):
+                discounted = final_reward * (discount_factor ** (len(states) - step_index - 1))
+                data.append((f, a, discounted))
 
     return data
 
@@ -169,7 +180,7 @@ def train_on_match_data(data, model):
         optimizer.step()
 
 if __name__ == "__main__":
-    data = collect_training_data(num_hands=10000)
+    data = collect_training_data(num_hands_per_opponent=10000)
     model = NeuralNetworkModel()
     train_on_match_data(data, model)
     model.save("submission/model.pth")

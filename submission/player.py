@@ -23,7 +23,11 @@ class MonteCarloNNPlayer:
     def __init__(self, model_path=None):
         model_path = os.path.join(os.path.dirname(__file__), "model.pth")
         self.model = NeuralNetworkModel()
-        self.model.load(model_path)
+
+        try:
+            self.model.load(model_path)
+        except FileNotFoundError:
+            print("⚠️ No model.pth found — skipping load (will need to train first)")
 
     def act(self, state):
         features = self.extract_features(state)
@@ -47,10 +51,21 @@ class PlayerAgent(Agent):
         self.won_hands = 0
         self.evaluator = Evaluator()
 
-        # ✅ Load trained model with correct path
-        model_path = os.path.join(os.path.dirname(__file__), "model.pth")
+        # Model loading
         self.model = NeuralNetworkModel()
-        self.model.load(model_path)
+        model_path = os.path.join(os.path.dirname(__file__), "model.pth")
+        super().__init__(stream)
+        self.hand_number = 0
+        self.last_action = None
+        self.won_hands = 0
+        self.evaluator = Evaluator()
+
+        # Model loading
+        self.model = NeuralNetworkModel()
+        model_path = os.path.join(os.path.dirname(__file__), "model.pth")
+        if os.path.exists(model_path):
+            self.model.load(model_path)
+            print("✅ Loaded model from model.pth")
 
     def act(self, observation, reward, terminated, truncated, info):
         if observation["street"] == 0 and info.get("hand_number", 0) % 50 == 0:
@@ -88,38 +103,35 @@ class PlayerAgent(Agent):
         return best_action, raise_amount, card_to_discard
 
     def extract_features(self, observation, info):
-        pot = observation["my_bet"] + observation["opp_bet"]
-        my_stack = 1000  # Mock/placeholder for now
-        opp_stack = 1000
+        pot = observation.get("my_bet", 0) + observation.get("opp_bet", 0)
+        my_stack = observation.get("my_stack", 100)
+        opp_stack = observation.get("opp_stack", 100)
         bet_to_call = observation["opp_bet"] - observation["my_bet"]
-        prev_action = 0  # or hardcode for now
+        prev_action = info.get("opp_last_action", 0)
         street = observation["street"]
         hand_strength = 0.0
 
-        # Estimate hand strength only if board is visible
         if street > 0:
-            try:
-                my_cards = [PokerEnv.int_to_card(card) for card in observation["my_cards"] if card != -1]
-                community_cards = [PokerEnv.int_to_card(card) for card in observation["community_cards"] if card != -1]
-                hand_strength = 1 - self.evaluator.evaluate(my_cards, community_cards) / 7462
-            except Exception as e:
-                print("⚠️ Hand strength eval error:", e)
-                hand_strength = 0.5  # fallback
+            my_cards = [PokerEnv.int_to_card(card) for card in observation["my_cards"]]
+            community_cards = [PokerEnv.int_to_card(card) for card in observation["community_cards"] if card != -1]
+            hand_strength = 1 - self.evaluator.evaluate(my_cards, community_cards) / 7462
+
+        # NEW features:
+        is_preflop = int(street == 0)
+        is_turn = int(street == 2)
+        bet_ratio = bet_to_call / (pot + 1e-6)
+        is_big_raise = int(bet_to_call > pot * 0.5)
 
         features = [
-            float(pot),
-            float(my_stack),
-            float(opp_stack),
-            float(bet_to_call),
-            float(prev_action),
-            float(hand_strength),
+            pot, my_stack, opp_stack, bet_to_call,
+            prev_action, hand_strength, bet_ratio, is_big_raise,
+            is_preflop, is_turn
         ]
 
-        # One-hot street
-        one_hot = [0.0, 0.0, 0.0, 0.0]
-        if 0 <= street < 4:
-            one_hot[street] = 1.0
-        features.extend(one_hot)
+        # One-hot encode street
+        one_hot = [0, 0, 0, 0]
+        one_hot[street] = 1
+        features.extend(one_hot)  # Final size: 10 + 4 = 14
 
         return features
     
